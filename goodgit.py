@@ -7,6 +7,15 @@ from tkinter import messagebox, scrolledtext, filedialog
 import tkinter as tk  # Ensure tkinter is imported as tk
 from groq import Groq
 from dotenv import load_dotenv
+import logging
+
+# Configure logging
+logging.basicConfig(
+    filename='goodgit.log',
+    filemode='a',
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -306,7 +315,7 @@ class CommitGeneratorGUI(ctk.CTk):
         self.push_button.configure(state="disabled")
         self.refresh_button.configure(state="disabled")
 
-    def populate_files(self):
+    def populate_files(self, max_files=50):
         """Populate the scrollable frame with changed files and checkboxes."""
         try:
             if not self.repo:
@@ -331,7 +340,15 @@ class CommitGeneratorGUI(ctk.CTk):
                 no_changes_label.pack(pady=10, padx=10, fill="x")
                 return
 
-            for item in self.changed_files:
+            # Limit the number of files
+            limited_files = self.changed_files[:max_files]
+            if len(self.changed_files) > max_files:
+                messagebox.showwarning(
+                    "File Limit Reached",
+                    f"Only the first {max_files} changed files are displayed. Please commit remaining changes separately."
+                )
+
+            for item in limited_files:
                 file_path = item.a_path
                 var = tk.BooleanVar(value=True)  # Corrected to tk.BooleanVar
                 chk = ctk.CTkCheckBox(
@@ -369,21 +386,58 @@ class CommitGeneratorGUI(ctk.CTk):
             messagebox.showerror("Git Error", f"Failed to stage files:\n{e}")
             return False
 
-    def generate_message(self):
+    def generate_message(self, max_retries=3):
         """Generate commit message using Groq AI based on selected changes."""
         if not self.stage_selected_files():
             return
 
         try:
             diff = self.repo.git.diff('--cached', '--pretty=format:')
-            commit_message = self.call_groq_api(diff)
-            if commit_message:
-                self.text_area.delete(1.0, tk.END)  # Changed to tk.END
-                self.text_area.insert(tk.END, commit_message)  # Changed to tk.END
-            else:
-                messagebox.showerror("Error", "Failed to generate commit message.")
+            limited_diff, was_truncated = self.limit_diff_size(diff, max_size=5000)
+
+            if was_truncated:
+                messagebox.showwarning(
+                    "Diff Truncated",
+                    "The diff is too large and has been truncated to fit the API limits."
+                )
+
+            for attempt in range(1, max_retries + 1):
+                commit_message = self.call_groq_api(limited_diff)
+                if commit_message:
+                    self.text_area.delete(1.0, tk.END)
+                    self.text_area.insert(tk.END, commit_message)
+                    return  # Successful generation; exit the method
+                else:
+                    logging.warning(f"Attempt {attempt}: Failed to generate a valid commit message.")
+                    if attempt < max_retries:
+                        logging.info("Retrying to generate commit message...")
+            # After max_retries attempts, allow manual input
+            response = messagebox.askyesno(
+                "Generate Commit Message",
+                "Failed to generate a valid commit message after multiple attempts.\nWould you like to enter it manually?"
+            )
+            if response:
+                self.text_area.delete(1.0, tk.END)
+                # The user can now type their commit message in the text area
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred:\n{e}")
+
+    def limit_diff_size(self, diff_text, max_size=5000):
+        """
+        Limits the size of the diff_text to max_size characters.
+
+        Parameters:
+            diff_text (str): The full diff text.
+            max_size (int): The maximum allowed size in characters.
+
+        Returns:
+            tuple: (limited_diff_text, was_truncated)
+        """
+        if len(diff_text) > max_size:
+            limited_diff = diff_text[:max_size]
+            was_truncated = True
+            return limited_diff, was_truncated
+        return diff_text, False
 
     def commit_message(self):
         """Commit the staged changes with the generated message."""
@@ -431,10 +485,12 @@ class CommitGeneratorGUI(ctk.CTk):
 
         # Enhanced prompt to enforce Conventional Commit types
         prompt = (
-            "Generate a Conventional Commit message based on the following diff. "
-            "The commit message should start with one of the following types: "
+            "Generate a Conventional Commit message based on the following git diff. "
+            "The commit message must start with one of the following types followed by a colon and a space: "
             "feat, fix, docs, style, refactor, perf, test, chore, ci, build. "
-            "Only provide the commit message without any additional text.\n\n"
+            "The message should be concise and only include the commit message without any additional text.\n\n"
+            "Example:\n"
+            "feat: add user authentication module\n\n"
             f"{diff_text}"
         )
 
@@ -454,12 +510,19 @@ class CommitGeneratorGUI(ctk.CTk):
             if any(commit_message.startswith(f"{ctype}:") for ctype in CONVENTIONAL_TYPES):
                 return commit_message
             else:
-                # Optionally, you can prompt the user or retry the API call
-                messagebox.showwarning(
-                    "Invalid Commit Message",
-                    "The generated commit message does not start with a conventional commit type."
-                )
+                # Log the invalid commit message for debugging
+                logging.warning(f"Invalid commit message received: {commit_message}")
                 return None
+        except GitCommandError as e:
+            # Specific handling for context_length exceeded
+            if "context_length exceeded" in str(e):
+                messagebox.showerror(
+                    "Groq API Error",
+                    "The diff is too large for the Groq API to process. Please reduce the number of changes and try again."
+                )
+            else:
+                messagebox.showerror("Groq API Error", f"An error occurred while calling the Groq API:\n{e}")
+            return None
         except Exception as e:
             messagebox.showerror("Groq API Error", f"An error occurred while calling the Groq API:\n{e}")
             return None
@@ -506,6 +569,12 @@ def cli():
         # Get the diff
         diff = repo.git.diff('--cached', '--pretty=format:')
 
+        # Limit the diff size
+        max_diff_size = 5000
+        if len(diff) > max_diff_size:
+            print(f"Warning: The diff is too large and has been truncated to {max_diff_size} characters.")
+            diff = diff[:max_diff_size]
+
         # Call Groq API
         api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
@@ -514,10 +583,12 @@ def cli():
 
         client = Groq(api_key=api_key)
         prompt = (
-            "Generate a Conventional Commit message based on the following diff. "
-            "The commit message should start with one of the following types: "
+            "Generate a Conventional Commit message based on the following git diff. "
+            "The commit message must start with one of the following types followed by a colon and a space: "
             "feat, fix, docs, style, refactor, perf, test, chore, ci, build. "
-            "Only provide the commit message without any additional text.\n\n"
+            "The message should be concise and only include the commit message without any additional text.\n\n"
+            "Example:\n"
+            "feat: add user authentication module\n\n"
             f"{diff}"
         )
 
@@ -539,6 +610,12 @@ def cli():
             else:
                 print("Error: The generated commit message does not start with a conventional commit type.")
                 sys.exit(1)
+        except GitCommandError as e:
+            if "context_length exceeded" in str(e):
+                print("Error: The diff is too large for the Groq API to process. Please reduce the number of changes and try again.")
+            else:
+                print(f"Groq API Error: {e}")
+            sys.exit(1)
         except Exception as e:
             print(f"Groq API Error: {e}")
             sys.exit(1)

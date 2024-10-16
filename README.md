@@ -77,7 +77,7 @@ pip install -r requirements.txt
 
 The tool offers both CLI and GUI options.
 
-## CLI
+### CLI
 
 1. **Generate Commit Message**
 
@@ -98,3 +98,97 @@ The tool offers both CLI and GUI options.
    ```
 
    This command will generate the commit message and create a commit in your Git repository with the generated message.
+
+### GUI
+
+1. **Launch the GUI**
+
+   ```bash
+   python commit_tool.py --gui
+   ```
+
+   This command will open the graphical interface.
+
+2. **Using the GUI**
+
+   - Generate Commit Message: Click the "Generate Commit Message" button to fetch and display the commit message based on staged changes.
+   - Review/Edit: You can review or manually edit the commit message in the text area.
+   - Commit: Click the "Commit" button to create the commit with the displayed message.
+
+## Examples
+
+### Example 1: Generating a Commit Message via CLI
+
+```bash
+$ git add .
+$ python goodgit.py --cli
+
+Generated Commit Message:
+feat(parser): add ability to parse nested JSON structures
+```
+
+### Example 2: Generating and Committing via CLI
+
+```bash
+$ git add .
+$ python goodgit.py --cli --commit
+
+Generated Commit Message:
+fix(auth): resolve issue with token expiration
+
+Commit created successfully.
+```
+
+### Example 3: Using the GUI
+
+1. Launch the GUI:
+
+```bash
+python goodgit.py --gui
+```
+
+2. Click "Generate Commit Message". The generated message appears in the text area.
+3. Review or edit the message as needed.
+4. Click "Commit" to create the commit.
+
+## Contributing
+
+Contributions are welcome! Please follow these steps to contribute:
+
+1. **Fork the Repository**
+   Click the "Fork" button at the top-right corner of this page.
+
+2. **Clone your fork**
+
+   ```bash
+   git clone https://github.com/yourusername/goodgit.git
+   cd goodgit
+   ```
+
+3. **Create a new branch**
+
+   ```bash
+   git checkout -b feature/your-feature-name
+   ```
+
+4. **Make your changes**
+   Implement your feature or bug fix.
+
+5. **Commit your changes**
+
+   ```bash
+   git commit -m "feat: add your feature description"
+   ```
+
+6. **Push your fork**
+
+   ```bash
+   git push origin feature/your-feature-name
+   ```
+
+7. **Create a pull request**
+   Navigate to the original repository and click "Compare & pull request".
+
+## License
+
+This project is licensed under the MIT License. See LICENSE.txt for details.

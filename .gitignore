@@ -1,3 +1,27 @@
 # .gitignore
 .env
 goodgit.log
+
+# Python
+__pycache__/
+*.pyc
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+
+# PyInstaller
+dist/
+build/
+*.spec
+
+# Environment Variables
+.env
+
+# Others
+*.exe

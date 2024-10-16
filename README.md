@@ -62,10 +62,13 @@ pip install -r requirements.txt
 - Create an API Key: Visit Groq's API Key Creation Page to generate your API key.
 
 2. **Set Up Environment Variables**
+
    To securely manage your Groq API key, use a `.env` file.
 
    1. **Create a .env File**
+
       In the root directory of the project, create a file named .env.
+
       ```env
       GROQ_API_KEY=your_actual_groq_api_key_here
       ```
@@ -77,6 +80,7 @@ The tool offers both CLI and GUI options.
 ## CLI
 
 1. **Generate Commit Message**
+
    To generate a commit message based on staged changes:
 
    ```bash
@@ -86,6 +90,7 @@ The tool offers both CLI and GUI options.
    This command will print the generated commit message to the console.
 
 2. **Generate and Commit**
+
    To generate a commit message and create a commit in one step:
 
    ```bash

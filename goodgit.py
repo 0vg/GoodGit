@@ -47,7 +47,12 @@ def call_groq_api(diff_text):
 
     client = Groq(api_key=api_key)
 
-    prompt = f"Generate a Conventional Commit message based on the following diff:\n\n{diff_text}"
+    # Updated prompt to instruct AI to return only the commit message
+    prompt = (
+        "Generate a Conventional Commit message based on the following diff.\n"
+        "Only provide the commit message without any additional text.\n\n"
+        f"{diff_text}"
+    )
 
     try:
         chat_completion = client.chat.completions.create(
@@ -79,7 +84,7 @@ def generate_commit_message():
     commit_message = call_groq_api(diff)
 
     if commit_message:
-        print("Generated Commit Message:")
+        # Print only the commit message without additional text
         print(commit_message)
         return commit_message
     else:
@@ -88,8 +93,14 @@ def generate_commit_message():
 
 def cli():
     """Command-Line Interface."""
-    parser = argparse.ArgumentParser(description="Auto-generate Git commit messages following Conventional Commits.")
-    parser.add_argument('--commit', action='store_true', help='Generate and commit with the auto-generated message.')
+    parser = argparse.ArgumentParser(
+        description="Auto-generate Git commit messages following Conventional Commits."
+    )
+    parser.add_argument(
+        '--commit',
+        action='store_true',
+        help='Generate and commit with the auto-generated message.'
+    )
     args = parser.parse_args()
 
     commit_message = generate_commit_message()
@@ -148,7 +159,9 @@ def gui():
     root.mainloop()
 
 def main():
-    parser = argparse.ArgumentParser(description="Auto-generate Git commit messages following Conventional Commits.")
+    parser = argparse.ArgumentParser(
+        description="Auto-generate Git commit messages following Conventional Commits."
+    )
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--gui', action='store_true', help='Launch GUI mode.')
     group.add_argument('--cli', action='store_true', help='Launch CLI mode.')
@@ -161,3 +174,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# Example of Desired Output:
+# feat: Add LICENSE.txt file and CLI/GUI functionality for auto-generating Conventional Commit messages

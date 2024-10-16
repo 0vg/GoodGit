@@ -4,7 +4,7 @@ import os
 from git import Repo, GitCommandError
 import customtkinter as ctk
 from tkinter import messagebox, scrolledtext, filedialog
-import tkinter as tk  # Added import for tkinter
+import tkinter as tk  # Ensure tkinter is imported as tk
 from groq import Groq
 from dotenv import load_dotenv
 
@@ -22,6 +22,7 @@ class CommitGeneratorGUI(ctk.CTk):
         super().__init__()
 
         self.repo = None
+        self.file_vars = {}  # Initialize file_vars here
 
         # Configure window
         self.title("🎉 Auto Git Commit Message Generator")
@@ -112,30 +113,9 @@ class CommitGeneratorGUI(ctk.CTk):
         )
         self.files_label.grid(row=1, column=0, sticky="w", pady=(20, 0))
 
-        # Canvas and scrollbar for files
-        self.canvas = ctk.CTkCanvas(self.main_frame)
-        self.scrollbar = ctk.CTkScrollbar(
-            self.main_frame,
-            orientation="vertical",
-            command=self.canvas.yview
-        )
-        self.scrollable_frame = ctk.CTkFrame(self.canvas)
-
-        self.scrollable_frame.bind(
-            "<Configure>",
-            lambda e: self.canvas.configure(
-                scrollregion=self.canvas.bbox("all")
-            )
-        )
-
-        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
-
-        self.canvas.grid(row=2, column=0, sticky="nsew")
-        self.scrollbar.grid(row=2, column=1, sticky="ns")
-
-        # Dictionary to hold file checkboxes
-        self.file_vars = {}
+        # Scrollable Frame for Changed Files
+        self.scrollable_frame = ctk.CTkScrollableFrame(self.main_frame, corner_radius=10)
+        self.scrollable_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(10, 10))
 
         # Commit Message Label
         self.commit_label = ctk.CTkLabel(
@@ -156,11 +136,11 @@ class CommitGeneratorGUI(ctk.CTk):
             fg=self._get_text_area_fg(),
             insertbackground=self._get_text_area_fg()
         )
-        self.text_area.grid(row=4, column=0, padx=(0, 20), pady=(10, 20), sticky="nsew")
+        self.text_area.grid(row=4, column=0, columnspan=2, padx=(0, 20), pady=(10, 20), sticky="nsew")
 
         # Buttons Frame
         self.buttons_frame = ctk.CTkFrame(self.main_frame)
-        self.buttons_frame.grid(row=5, column=0, pady=10, sticky="ew")
+        self.buttons_frame.grid(row=5, column=0, columnspan=2, pady=10, sticky="ew")
         self.buttons_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)  # Added column 4 for Exit button
 
         # Define a smaller font for buttons
@@ -221,8 +201,9 @@ class CommitGeneratorGUI(ctk.CTk):
             # If setting repository failed, prompt user to select one
             self.prompt_repository_selection()
 
-        # Apply initial theme to ScrolledText
+        # Apply initial theme to ScrolledText and ScrollableFrame
         self.update_scrolledtext_colors()
+        self.update_scrollable_frame_colors()
 
     def _get_text_area_bg(self):
         """Get the background color for the ScrolledText based on the current theme."""
@@ -240,10 +221,19 @@ class CommitGeneratorGUI(ctk.CTk):
         else:
             return "#000000"
 
+    def _get_scrollable_frame_bg(self):
+        """Get the background color for the ScrollableFrame based on the current theme."""
+        mode = ctk.get_appearance_mode()
+        if mode == "Dark":
+            return "#2B2B2B"
+        else:
+            return "#FFFFFF"
+
     def change_appearance_mode_event(self, new_appearance_mode: str):
         """Change the appearance mode of the application."""
         ctk.set_appearance_mode(new_appearance_mode)
         self.update_scrolledtext_colors()
+        self.update_scrollable_frame_colors()
 
     def change_scaling_event(self, new_scaling: str):
         """Change the scaling of the application."""
@@ -260,6 +250,11 @@ class CommitGeneratorGUI(ctk.CTk):
             fg=self._get_text_area_fg(),
             insertbackground=self._get_text_area_fg()
         )
+
+    def update_scrollable_frame_colors(self):
+        """Update the ScrollableFrame colors based on the current theme."""
+        bg_color = self._get_scrollable_frame_bg()
+        self.scrollable_frame.configure(fg_color=bg_color)
 
     def change_directory(self):
         """Open a dialog to select a new repository directory."""
@@ -434,9 +429,11 @@ class CommitGeneratorGUI(ctk.CTk):
 
         client = Groq(api_key=api_key)
 
-        # Updated prompt to instruct AI to return only the commit message
+        # Enhanced prompt to enforce Conventional Commit types
         prompt = (
-            "Generate a Conventional Commit message based on the following diff.\n"
+            "Generate a Conventional Commit message based on the following diff. "
+            "The commit message should start with one of the following types: "
+            "feat, fix, docs, style, refactor, perf, test, chore, ci, build. "
             "Only provide the commit message without any additional text.\n\n"
             f"{diff_text}"
         )
@@ -452,7 +449,17 @@ class CommitGeneratorGUI(ctk.CTk):
                 model="llama3-8b-8192",
             )
             commit_message = chat_completion.choices[0].message.content.strip()
-            return commit_message
+
+            # Validate the commit message starts with a conventional type
+            if any(commit_message.startswith(f"{ctype}:") for ctype in CONVENTIONAL_TYPES):
+                return commit_message
+            else:
+                # Optionally, you can prompt the user or retry the API call
+                messagebox.showwarning(
+                    "Invalid Commit Message",
+                    "The generated commit message does not start with a conventional commit type."
+                )
+                return None
         except Exception as e:
             messagebox.showerror("Groq API Error", f"An error occurred while calling the Groq API:\n{e}")
             return None
@@ -507,21 +514,34 @@ def cli():
 
         client = Groq(api_key=api_key)
         prompt = (
-            "Generate a Conventional Commit message based on the following diff.\n"
+            "Generate a Conventional Commit message based on the following diff. "
+            "The commit message should start with one of the following types: "
+            "feat, fix, docs, style, refactor, perf, test, chore, ci, build. "
             "Only provide the commit message without any additional text.\n\n"
             f"{diff}"
         )
 
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            model="llama3-8b-8192",
-        )
-        commit_message = chat_completion.choices[0].message.content.strip()
+        try:
+            chat_completion = client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+                model="llama3-8b-8192",
+            )
+            commit_message = chat_completion.choices[0].message.content.strip()
+
+            # Validate the commit message starts with a conventional type
+            if any(commit_message.startswith(f"{ctype}:") for ctype in CONVENTIONAL_TYPES):
+                pass
+            else:
+                print("Error: The generated commit message does not start with a conventional commit type.")
+                sys.exit(1)
+        except Exception as e:
+            print(f"Groq API Error: {e}")
+            sys.exit(1)
 
         if args.commit:
             repo.index.commit(commit_message)

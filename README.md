@@ -55,7 +55,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Installation
+## Configuration
 
 1. **Obtain a Groq API Key**
 
@@ -69,3 +69,27 @@ pip install -r requirements.txt
       ```env
       GROQ_API_KEY=your_actual_groq_api_key_here
       ```
+
+## Usage
+
+The tool offers both CLI and GUI options.
+
+## CLI
+
+1. **Generate Commit Message**
+   To generate a commit message based on staged changes:
+
+   ```bash
+   python goodgit.py --cli
+   ```
+
+   This command will print the generated commit message to the console.
+
+2. **Generate and Commit**
+   To generate a commit message and create a commit in one step:
+
+   ```bash
+   python goodgit.py --cli --commit
+   ```
+
+   This command will generate the commit message and create a commit in your Git repository with the generated message.

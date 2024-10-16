@@ -4,7 +4,7 @@ import os
 from git import Repo, GitCommandError
 import customtkinter as ctk
 from tkinter import messagebox, scrolledtext, filedialog
-import tkinter as tk  # Ensure tkinter is imported as tk
+import tkinter as tk
 from groq import Groq
 from dotenv import load_dotenv
 import logging
@@ -31,7 +31,7 @@ class CommitGeneratorGUI(ctk.CTk):
         super().__init__()
 
         self.repo = None
-        self.file_vars = {}  # Initialize file_vars here
+        self.file_vars = {}
 
         # Configure window
         self.title("🎉 Auto Git Commit Message Generator")
@@ -45,7 +45,7 @@ class CommitGeneratorGUI(ctk.CTk):
         # Sidebar frame
         self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(10, weight=1)  # Adjusted to accommodate Exit button
+        self.sidebar_frame.grid_rowconfigure(10, weight=1)
 
         # Logo
         self.logo_label = ctk.CTkLabel(
@@ -96,7 +96,7 @@ class CommitGeneratorGUI(ctk.CTk):
         # Main frame
         self.main_frame = ctk.CTkFrame(self, corner_radius=0)
         self.main_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
-        self.main_frame.grid_rowconfigure(2, weight=1)  # Changed from 1 to 2
+        self.main_frame.grid_rowconfigure(2, weight=1)
         self.main_frame.grid_columnconfigure(0, weight=1)
 
         # Repository Path Display
@@ -137,7 +137,7 @@ class CommitGeneratorGUI(ctk.CTk):
         # Commit Message Text Area
         self.text_area = scrolledtext.ScrolledText(
             self.main_frame,
-            wrap='word',  # Correct usage with tk.END
+            wrap='word',
             width=80,
             height=10,
             font=("Helvetica", 12),
@@ -150,7 +150,7 @@ class CommitGeneratorGUI(ctk.CTk):
         # Buttons Frame
         self.buttons_frame = ctk.CTkFrame(self.main_frame)
         self.buttons_frame.grid(row=5, column=0, columnspan=2, pady=10, sticky="ew")
-        self.buttons_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)  # Added column 4 for Exit button
+        self.buttons_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
 
         # Define a smaller font for buttons
         button_font = ctk.CTkFont(size=12, weight="bold")
@@ -160,7 +160,7 @@ class CommitGeneratorGUI(ctk.CTk):
             self.buttons_frame,
             text="✨ Generate Commit Message",
             command=self.generate_message,
-            state="disabled",  # Disabled until repo is set
+            state="disabled",
             font=button_font
         )
         self.generate_button.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
@@ -170,7 +170,7 @@ class CommitGeneratorGUI(ctk.CTk):
             self.buttons_frame,
             text="💾 Commit",
             command=self.commit_message,
-            state="disabled",  # Disabled until repo is set
+            state="disabled",
             font=button_font
         )
         self.commit_button.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
@@ -180,7 +180,7 @@ class CommitGeneratorGUI(ctk.CTk):
             self.buttons_frame,
             text="🚀 Push",
             command=self.push_commit,
-            state="disabled",  # Disabled until repo is set
+            state="disabled",
             font=button_font
         )
         self.push_button.grid(row=0, column=2, padx=5, pady=5, sticky="ew")
@@ -190,7 +190,7 @@ class CommitGeneratorGUI(ctk.CTk):
             self.buttons_frame,
             text="🔄 Refresh Files",
             command=self.refresh_files,
-            state="disabled",  # Disabled until repo is set
+            state="disabled",
             font=button_font
         )
         self.refresh_button.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
@@ -323,14 +323,40 @@ class CommitGeneratorGUI(ctk.CTk):
                 messagebox.showerror("Repository Error", "No valid Git repository selected.")
                 return
 
-            self.changed_files = self.repo.index.diff(None)
+            # Retrieve changes
+            unstaged_changes = self.repo.index.diff(None)
+            staged_changes = self.repo.index.diff("HEAD")
+            untracked_files = self.repo.untracked_files
+
+            # Combine all changes into a single list with change types
+            changed_files = []
+
+            # Add staged changes
+            for item in staged_changes:
+                changed_files.append((item.a_path, 'staged'))
+
+            # Add unstaged changes
+            for item in unstaged_changes:
+                changed_files.append((item.a_path, 'unstaged'))
+
+            # Add untracked files
+            for file_path in untracked_files:
+                changed_files.append((file_path, 'untracked'))
+
+            # Limit the number of displayed files
+            if len(changed_files) > max_files:
+                messagebox.showwarning(
+                    "File Limit Reached",
+                    f"Only the first {max_files} changed files are displayed. Please commit remaining changes separately."
+                )
+                changed_files = changed_files[:max_files]
 
             # Clear previous checkboxes
             for widget in self.scrollable_frame.winfo_children():
                 widget.destroy()
             self.file_vars.clear()
 
-            if not self.changed_files:
+            if not changed_files:
                 no_changes_label = ctk.CTkLabel(
                     self.scrollable_frame,
                     text="No changes detected.",
@@ -340,24 +366,16 @@ class CommitGeneratorGUI(ctk.CTk):
                 no_changes_label.pack(pady=10, padx=10, fill="x")
                 return
 
-            # Limit the number of files
-            limited_files = self.changed_files[:max_files]
-            if len(self.changed_files) > max_files:
-                messagebox.showwarning(
-                    "File Limit Reached",
-                    f"Only the first {max_files} changed files are displayed. Please commit remaining changes separately."
-                )
-
-            for item in limited_files:
-                file_path = item.a_path
-                var = tk.BooleanVar(value=True)  # Corrected to tk.BooleanVar
+            for file_path, status in changed_files:
+                var = tk.BooleanVar(value=True)
                 chk = ctk.CTkCheckBox(
                     self.scrollable_frame,
-                    text=file_path,
+                    text=f"{file_path} [{status}]",
                     variable=var
                 )
                 chk.pack(anchor='w', padx=10, pady=2)
                 self.file_vars[file_path] = var
+
         except AttributeError as e:
             messagebox.showerror("Error", f"Failed to retrieve changed files:\n{e}")
         except Exception as e:
@@ -434,8 +452,16 @@ class CommitGeneratorGUI(ctk.CTk):
             tuple: (limited_diff_text, was_truncated)
         """
         if len(diff_text) > max_size:
-            limited_diff = diff_text[:max_size]
-            was_truncated = True
+            # Split the diff into individual file diffs
+            file_diffs = diff_text.split('\ndiff --git')
+            limited_diff = ""
+            for file_diff in file_diffs:
+                # Reconstruct the diff for each file
+                reconstructed_diff = f"\ndiff --git{file_diff}"
+                if len(limited_diff) + len(reconstructed_diff) > max_size:
+                    break
+                limited_diff += reconstructed_diff
+            was_truncated = len(limited_diff) < len(diff_text)
             return limited_diff, was_truncated
         return diff_text, False
 
@@ -485,10 +511,10 @@ class CommitGeneratorGUI(ctk.CTk):
 
         # Enhanced prompt to enforce Conventional Commit types
         prompt = (
-            "Generate a Conventional Commit message based on the following git diff. "
-            "The commit message must start with one of the following types followed by a colon and a space: "
-            "feat, fix, docs, style, refactor, perf, test, chore, ci, build. "
-            "The message should be concise and only include the commit message without any additional text.\n\n"
+            "You are an assistant that generates Git commit messages following the Conventional Commit specification. "
+            "Based on the provided git diff, generate a concise commit message that starts with one of the following types "
+            "followed by a colon and a space: feat, fix, docs, style, refactor, perf, test, chore, ci, build.\n\n"
+            "Commit message should be only one line and should not contain any additional text or explanations.\n\n"
             "Example:\n"
             "feat: add user authentication module\n\n"
             f"{diff_text}"
@@ -502,16 +528,20 @@ class CommitGeneratorGUI(ctk.CTk):
                         "content": prompt,
                     }
                 ],
-                model="llama3-8b-8192",
+                model="llama3-8b-8192",  # Verify this is the correct model
             )
             commit_message = chat_completion.choices[0].message.content.strip()
 
+            # Log the raw commit message for debugging
+            logging.info(f"Raw commit message from API: '{commit_message}'")
+
             # Validate the commit message starts with a conventional type
             if any(commit_message.startswith(f"{ctype}:") for ctype in CONVENTIONAL_TYPES):
+                logging.info("Commit message is valid.")
                 return commit_message
             else:
                 # Log the invalid commit message for debugging
-                logging.warning(f"Invalid commit message received: {commit_message}")
+                logging.warning(f"Invalid commit message received: '{commit_message}'")
                 return None
         except GitCommandError as e:
             # Specific handling for context_length exceeded
@@ -559,7 +589,8 @@ def cli():
     try:
         repo = get_repo()
         changed_files = repo.index.diff(None)
-        if not changed_files:
+        untracked_files = repo.untracked_files
+        if not changed_files and not untracked_files:
             print("No changed files detected.")
             sys.exit(0)
 
@@ -583,10 +614,10 @@ def cli():
 
         client = Groq(api_key=api_key)
         prompt = (
-            "Generate a Conventional Commit message based on the following git diff. "
-            "The commit message must start with one of the following types followed by a colon and a space: "
-            "feat, fix, docs, style, refactor, perf, test, chore, ci, build. "
-            "The message should be concise and only include the commit message without any additional text.\n\n"
+            "You are an assistant that generates Git commit messages following the Conventional Commit specification. "
+            "Based on the provided git diff, generate a concise commit message that starts with one of the following types "
+            "followed by a colon and a space: feat, fix, docs, style, refactor, perf, test, chore, ci, build.\n\n"
+            "Commit message should be only one line and should not contain any additional text or explanations.\n\n"
             "Example:\n"
             "feat: add user authentication module\n\n"
             f"{diff}"
@@ -600,15 +631,19 @@ def cli():
                         "content": prompt,
                     }
                 ],
-                model="llama3-8b-8192",
+                model="llama3-8b-8192",  # Verify this is the correct model
             )
             commit_message = chat_completion.choices[0].message.content.strip()
+
+            # Log the raw commit message for debugging
+            logging.info(f"Raw commit message from API: '{commit_message}'")
 
             # Validate the commit message starts with a conventional type
             if any(commit_message.startswith(f"{ctype}:") for ctype in CONVENTIONAL_TYPES):
                 pass
             else:
                 print("Error: The generated commit message does not start with a conventional commit type.")
+                logging.warning(f"Invalid commit message received: '{commit_message}'")
                 sys.exit(1)
         except GitCommandError as e:
             if "context_length exceeded" in str(e):

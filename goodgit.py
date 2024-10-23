@@ -6,7 +6,7 @@ and managing Git commit messages using Groq AI.
 
 Features:
 - Select Git repository
-- Display changed files with rename detection
+- Display changed files with rename and removal detection
 - Generate commit messages via Groq AI
 - Commit and push changes
 """
@@ -18,7 +18,7 @@ import re
 import sys
 import threading
 import traceback
-from typing import Tuple
+from typing import Tuple, List, Dict
 
 from dotenv import load_dotenv
 from git import GitCommandError, Repo
@@ -110,12 +110,12 @@ class RepoManager:
             logger.error("Error initializing repository: %s", e)
             raise
 
-    def get_changed_files(self) -> Tuple[list, list, list]:
+    def get_changed_files(self) -> Tuple[List, List, List]:
         """
         Retrieve changed, staged, and untracked files.
 
         Returns:
-            Tuple[list, list, list]: A tuple containing lists of changed_files, staged_changes, and untracked_files.
+            Tuple[List, List, List]: A tuple containing lists of changed_files, staged_changes, and untracked_files.
         """
         try:
             # Use rename=True to enable rename detection with -M
@@ -145,42 +145,92 @@ class RepoManager:
             return True
         except GitCommandError as e:
             logger.error("Failed to unstage all files: %s", e)
-            messagebox.showerror("Git Error", f"Failed to unstage all files:\n{e}")
+            # Removed messagebox to prevent GUI interruption
             return False
         except Exception as e:
             logger.error("Unexpected error during unstaging: %s", traceback.format_exc())
-            messagebox.showerror("Git Error", f"An unexpected error occurred while unstaging files:\n{e}")
+            # Removed messagebox to prevent GUI interruption
             return False
 
-    def stage_files(self, selected_files: list) -> bool:
+    def stage_files(self, selected_files: List[Tuple[str, str]]) -> bool:
         """
         Stage the selected files for commit.
 
         Args:
-            selected_files (list): List of file paths selected to be staged.
+            selected_files (List[Tuple[str, str]]): List of tuples containing (file_path, status).
 
         Returns:
             bool: True if staging was successful, False otherwise.
         """
         try:
-            for file in selected_files:
-                if ' -> ' in file:
-                    old_path, new_path = file.split(' -> ')
-                    logger.info("Renaming file from %s to %s", old_path, new_path)
-                    self.repo.git.mv(old_path, new_path)
-                    self.repo.index.add(new_path)
-                    logger.info("Staged renamed file: %s", new_path)
+            for file, status in selected_files:
+                logger.debug(f"Processing file: {file} with status: {status}")
+
+                if status == 'renamed':
+                    try:
+                        old_path, new_path = file.split(' -> ')
+                        logger.info("Renaming file from %s to %s", old_path, new_path)
+
+                        # Verify old_path exists
+                        if not os.path.exists(os.path.join(self.repo_path, old_path)):
+                            logger.error("Old path does not exist: %s", old_path)
+                            continue  # Skip to next file
+
+                        # Perform rename
+                        self.repo.git.mv(old_path, new_path)
+
+                        # Check if new_path exists after rename
+                        if not os.path.exists(os.path.join(self.repo_path, new_path)):
+                            logger.error("New path does not exist after rename: %s", new_path)
+                            continue  # Skip to next file
+
+                        self.repo.index.add(new_path)
+                        logger.info("Staged renamed file: %s", new_path)
+                    except Exception as e:
+                        logger.error("Error renaming file %s to %s: %s", old_path, new_path, e)
+                        continue  # Skip to next file
+
+                elif status == 'remove':
+                    try:
+                        logger.info("Removing file: %s", file)
+
+                        # Verify file exists before removal
+                        if os.path.exists(os.path.join(self.repo_path, file)):
+                            # Use git.rm for robust handling
+                            self.repo.git.rm(file)
+                            logger.info("Staged removal of file: %s", file)
+                        else:
+                            logger.warning("File already removed from working directory: %s", file)
+                    except GitCommandError as e:
+                        logger.error("GitCommandError removing file %s: %s", file, e)
+                        continue  # Skip to next file
+                    except Exception as e:
+                        logger.error("Error removing file %s: %s", file, e)
+                        continue  # Skip to next file
+
                 else:
-                    self.repo.index.add(file)
-                    logger.info("Staged file: %s", file)
+                    try:
+                        logger.info("Staging file: %s", file)
+
+                        # Verify file exists before adding
+                        if not os.path.exists(os.path.join(self.repo_path, file)):
+                            logger.error("File to add does not exist: %s", file)
+                            continue  # Skip to next file
+
+                        self.repo.index.add(file)
+                        logger.info("Staged file: %s", file)
+                    except Exception as e:
+                        logger.error("Error adding file %s: %s", file, e)
+                        continue  # Skip to next file
+
             return True
         except GitCommandError as e:
             logger.error("Failed to stage files: %s", e)
-            messagebox.showerror("Git Error", f"Failed to stage files:\n{e}")
+            # Removed messagebox to prevent GUI interruption
             return False
         except Exception as e:
             logger.error("Unexpected error during staging: %s", traceback.format_exc())
-            messagebox.showerror("Git Error", f"An unexpected error occurred while staging files:\n{e}")
+            # Removed messagebox to prevent GUI interruption
             return False
 
     def commit_changes(self, commit_message: str) -> bool:
@@ -196,15 +246,15 @@ class RepoManager:
         try:
             self.repo.index.commit(commit_message)
             logger.info("Commit created with message: %s", commit_message)
-            messagebox.showinfo("Success", "Commit created successfully.")
+            # Removed messagebox to prevent GUI interruption
             return True
         except GitCommandError as e:
             logger.error("Failed to create commit: %s", e)
-            messagebox.showerror("Git Error", f"Failed to create commit:\n{e}")
+            # Removed messagebox to prevent GUI interruption
             return False
         except Exception as e:
             logger.error("Unexpected error during commit: %s", traceback.format_exc())
-            messagebox.showerror("Git Error", f"An unexpected error occurred while creating commit:\n{e}")
+            # Removed messagebox to prevent GUI interruption
             return False
 
     def push_changes(self) -> bool:
@@ -218,19 +268,19 @@ class RepoManager:
             origin = self.repo.remote(name='origin')
             origin.push()
             logger.info("Pushed changes to remote repository.")
-            messagebox.showinfo("Success", "Pushed to remote repository successfully.")
+            # Removed messagebox to prevent GUI interruption
             return True
         except GitCommandError as e:
             logger.error("Failed to push to remote repository: %s", e)
-            messagebox.showerror("Push Error", f"Failed to push to remote repository:\n{e}")
+            # Removed messagebox to prevent GUI interruption
             return False
         except AttributeError:
             logger.error("No remote repository named 'origin' found.")
-            messagebox.showerror("Remote Not Found", "No remote repository named 'origin' found.")
+            # Removed messagebox to prevent GUI interruption
             return False
         except Exception as e:
             logger.error("Unexpected error during push: %s", traceback.format_exc())
-            messagebox.showerror("Error", f"An unexpected error occurred while pushing:\n{e}")
+            # Removed messagebox to prevent GUI interruption
             return False
 
     def get_staged_diff(self) -> Tuple[str, bool]:
@@ -250,11 +300,11 @@ class RepoManager:
             return limited_diff, was_truncated
         except GitCommandError as e:
             logger.error("Failed to retrieve staged diff: %s", e)
-            messagebox.showerror("Git Error", f"Failed to retrieve staged diff:\n{e}")
+            # Removed messagebox to prevent GUI interruption
             return "", False
         except Exception as e:
             logger.error("Unexpected error retrieving staged diff: %s", traceback.format_exc())
-            messagebox.showerror("Error", f"An unexpected error occurred while retrieving staged diff:\n{e}")
+            # Removed messagebox to prevent GUI interruption
             return "", False
 
     @staticmethod
@@ -347,7 +397,7 @@ class APIManager:
                         "content": prompt,
                     }
                 ],
-                model="llama3-groq-8b-8192-tool-use-preview",  # Updated to a supported Groq model
+                model="llama3-groq-8b-8192-tool-use-preview",  # Update to a supported Groq model
             )
             logger.debug("Received response from Groq API.")
             if not chat_completion.choices:
@@ -359,17 +409,14 @@ class APIManager:
         except GitCommandError as e:
             if "context_length exceeded" in str(e):
                 logger.error("Groq API Error: Context length exceeded.")
-                messagebox.showerror(
-                    "Groq API Error",
-                    "The diff is too large for the Groq API to process. Please reduce the number of changes and try again."
-                )
+                # Removed messagebox to prevent GUI interruption
             else:
                 logger.error("Groq API Error: %s", e)
-                messagebox.showerror("Groq API Error", f"An error occurred while calling the Groq API:\n{e}")
+                # Removed messagebox to prevent GUI interruption
             return ""
         except Exception as e:
             logger.error("Groq API Error: %s", traceback.format_exc())
-            messagebox.showerror("Groq API Error", f"An error occurred while calling the Groq API:\n{e}")
+            # Removed messagebox to prevent GUI interruption
             return ""
 
     def close_client(self):
@@ -396,7 +443,7 @@ class CommitGeneratorGUI(ctk.CTk):
 
         self.repo_manager = None
         self.api_manager = None
-        self.file_vars = {}
+        self.file_vars: Dict[str, Tuple[tk.BooleanVar, str]] = {}
 
         # Configure window
         self.title("🎉 Auto Git Commit Message Generator")
@@ -710,7 +757,7 @@ class CommitGeneratorGUI(ctk.CTk):
 
     def update_scrollable_frame_colors(self):
         """
-        Update the ScrollableFrame colors based on the current theme.
+        Update the ScrollableFrame colors based on the current appearance mode.
         """
         bg_color = self._get_scrollable_frame_bg()
         self.scrollable_frame.configure(fg_color=bg_color)
@@ -818,6 +865,8 @@ class CommitGeneratorGUI(ctk.CTk):
                 if item.change_type == 'R':
                     old_path, new_path = item.a_path, item.b_path
                     changed_files_list.append((f"{old_path} -> {new_path}", 'renamed'))
+                elif item.change_type == 'D':
+                    changed_files_list.append((item.a_path, 'remove'))
                 else:
                     changed_files_list.append((item.a_path, 'staged'))
 
@@ -826,6 +875,8 @@ class CommitGeneratorGUI(ctk.CTk):
                 if item.change_type == 'R':
                     old_path, new_path = item.a_path, item.b_path
                     changed_files_list.append((f"{old_path} -> {new_path}", 'renamed'))
+                elif item.change_type == 'D':
+                    changed_files_list.append((item.a_path, 'remove'))
                 else:
                     changed_files_list.append((item.a_path, 'unstaged'))
 
@@ -902,7 +953,8 @@ class CommitGeneratorGUI(ctk.CTk):
                 )
                 label.pack(side='left', padx=(5, 0))
 
-                self.file_vars[file_path] = var
+                # Store both the BooleanVar and status
+                self.file_vars[file_path] = (var, status)
                 logger.info("Added file to GUI: %s", display_text)
 
         except Exception as e:
@@ -918,30 +970,30 @@ class CommitGeneratorGUI(ctk.CTk):
         messagebox.showinfo("Refreshed", "File list has been refreshed.")
         logger.info("Refreshed the list of changed files.")
 
-    def stage_selected_files(self) -> bool:
+    def stage_selected_files(self) -> List[Tuple[str, str]]:
         """
-        Unstage all files and then stage the selected files for commit.
+        Retrieve selected files along with their statuses.
 
         Returns:
-            bool: True if staging was successful, False otherwise.
+            List[Tuple[str, str]]: A list of tuples containing (file_path, status).
         """
         try:
             # Unstage all files first to ensure only selected files are staged
             if not self.repo_manager.unstage_all_files():
-                return False
+                return []
 
-            selected_files = [file for file, var in self.file_vars.items() if var.get()]
+            selected_files = [(file, status) for file, (var, status) in self.file_vars.items() if var.get()]
             if not selected_files:
                 messagebox.showwarning("No Files Selected", "Please select at least one file to commit.")
                 logger.warning("No files selected for staging.")
-                return False
+                return []
 
             logger.info("Selected files for staging: %s", selected_files)
-            return self.repo_manager.stage_files(selected_files)
+            return selected_files
         except Exception as e:
             logger.error("Error in stage_selected_files: %s", traceback.format_exc())
             messagebox.showerror("Error", f"An unexpected error occurred while staging files:\n{e}")
-            return False
+            return []
 
     def generate_message(self, max_retries: int = 3):
         """
@@ -951,55 +1003,100 @@ class CommitGeneratorGUI(ctk.CTk):
             max_retries (int, optional): Maximum number of retries for message generation. Defaults to 3.
         """
         logger.info("Generate message button clicked.")
-        if not self.stage_selected_files():
-            logger.warning("Staging selected files failed or no files were staged.")
+        selected_files = self.stage_selected_files()
+
+        if not selected_files:
+            logger.warning("No files to stage.")
             return
 
-        # Start a new thread for the API call to keep GUI responsive
-        threading.Thread(target=self._generate_message_thread, args=(max_retries,), daemon=True).start()
+        # Separate deletions and other changes
+        deletions = [file for file, status in selected_files if status == 'remove']
+        other_changes = [file for file, status in selected_files if status != 'remove']
 
-    def _generate_message_thread(self, max_retries: int):
+        # Stage the selected files
+        if deletions:
+            # Stage deletions first
+            deletions_staged = self.repo_manager.stage_files([ (file, 'remove') for file in deletions ])
+            if not deletions_staged:
+                logger.warning("Some deletions failed to stage.")
+        if other_changes:
+            # Stage other changes
+            other_changes_staged = self.repo_manager.stage_files([ (file, status) for file, status in selected_files if status != 'remove' ])
+            if not other_changes_staged:
+                logger.warning("Some changes failed to stage.")
+
+        # Generate commit message
+        threading.Thread(target=self._generate_message_thread, args=(max_retries, deletions, other_changes), daemon=True).start()
+
+    def _generate_message_thread(self, max_retries: int, deletions: List[str], other_changes: List[str]):
         """
         Threaded method to generate commit message.
 
         Args:
             max_retries (int): Number of retry attempts.
+            deletions (List[str]): List of deleted files.
+            other_changes (List[str]): List of other changed files.
         """
         try:
             logger.info("Starting commit message generation thread.")
-            diff_text, was_truncated = self.repo_manager.get_staged_diff()
-            logger.debug("Diff Text Length: %d, Truncated: %s", len(diff_text), was_truncated)
-            if not diff_text:
-                logger.warning("No diff text available for commit message generation.")
-                return
 
-            if was_truncated:
-                self.show_warning("Diff Truncated",
-                                   "The diff is too large and has been truncated to fit the API limits.")
-                logger.warning("Diff was truncated due to size limitations.")
+            # Handle deletions with a static message
+            deletion_message = ""
+            if deletions:
+                deletion_message = "remove: " + ", ".join(deletions)
+                logger.info("Generated deletion message: %s", deletion_message)
 
-            # Always generate commit message via API regardless of number of files
-
-            for attempt in range(1, max_retries + 1):
-                logger.info("Attempt %d to generate commit message.", attempt)
-                commit_message = self.api_manager.generate_commit_message(diff_text)
-                logger.debug("Commit Message Attempt %d: %s", attempt, commit_message)
-                if commit_message and is_valid_commit_message(commit_message):
-                    logger.info("Commit message generated successfully on attempt %d.", attempt)
-                    self.update_text_area(commit_message)
-                    return
+            # Handle other changes with Groq AI
+            other_message = ""
+            if other_changes:
+                diff_text, was_truncated = self.repo_manager.get_staged_diff()
+                logger.debug("Diff Text Length: %d, Truncated: %s", len(diff_text), was_truncated)
+                if not diff_text:
+                    logger.warning("No diff text available for commit message generation.")
                 else:
-                    logger.warning("Attempt %d: Failed to generate a valid commit message.", attempt)
-                    if attempt < max_retries:
-                        logger.info("Retrying to generate commit message...")
-            # After max_retries attempts, allow manual input
-            response = self.ask_yes_no(
-                "Generate Commit Message",
-                "Failed to generate a valid commit message after multiple attempts.\nWould you like to enter it manually?"
-            )
-            if response:
-                self.clear_text_area()
-                logger.info("User opted to enter commit message manually.")
+                    if was_truncated:
+                        self.show_warning("Diff Truncated",
+                                           "The diff is too large and has been truncated to fit the API limits.")
+                        logger.warning("Diff was truncated due to size limitations.")
+
+                    for attempt in range(1, max_retries + 1):
+                        logger.info("Attempt %d to generate commit message.", attempt)
+                        commit_message = self.api_manager.generate_commit_message(diff_text)
+                        logger.debug("Commit Message Attempt %d: %s", attempt, commit_message)
+                        if commit_message and is_valid_commit_message(commit_message):
+                            logger.info("Commit message generated successfully on attempt %d.", attempt)
+                            other_message = commit_message
+                            break
+                        else:
+                            logger.warning("Attempt %d: Failed to generate a valid commit message.", attempt)
+                            if attempt < max_retries:
+                                logger.info("Retrying to generate commit message...")
+                    else:
+                        # After max_retries attempts, allow manual input
+                        response = self.ask_yes_no(
+                            "Generate Commit Message",
+                            "Failed to generate a valid commit message after multiple attempts.\nWould you like to enter it manually?"
+                        )
+                        if response:
+                            self.clear_text_area()
+                            logger.info("User opted to enter commit message manually.")
+                            return
+
+            # Combine messages
+            if deletion_message and other_message:
+                final_commit_message = f"{other_message} | {deletion_message}"
+            elif deletion_message:
+                final_commit_message = deletion_message
+            elif other_message:
+                final_commit_message = other_message
+            else:
+                final_commit_message = ""
+
+            if final_commit_message:
+                self.update_text_area(final_commit_message)
+                logger.info("Final commit message: %s", final_commit_message)
+            else:
+                logger.warning("No commit message generated.")
         except Exception as e:
             logger.error("Error during commit message generation: %s", traceback.format_exc())
             self.show_error("Error", f"An error occurred:\n{e}")
@@ -1223,6 +1320,8 @@ def cli():
                 old_path, new_path = item.a_path, item.b_path
                 logger.info("Staging renamed file from %s to %s", old_path, new_path)
                 files_to_stage.append(f"{old_path} -> {new_path}")
+            elif item.change_type == 'D':
+                files_to_stage.append(item.a_path)
             else:
                 files_to_stage.append(item.a_path)
 
@@ -1231,6 +1330,8 @@ def cli():
                 old_path, new_path = item.a_path, item.b_path
                 logger.info("Staging renamed file from %s to %s", old_path, new_path)
                 files_to_stage.append(f"{old_path} -> {new_path}")
+            elif item.change_type == 'D':
+                files_to_stage.append(item.a_path)
             else:
                 files_to_stage.append(item.a_path)
 
@@ -1238,8 +1339,27 @@ def cli():
             files_to_stage.append(file_path)
             logger.info("Staging untracked file: %s", file_path)
 
-        if not repo_manager.stage_files(files_to_stage):
-            sys.exit(1)
+        # Separate deletions and other changes
+        deletions = [file for file in files_to_stage if ' -> ' not in file and not os.path.exists(os.path.join(repo_manager.repo_path, file))]
+        other_files = [file for file in files_to_stage if file not in deletions]
+
+        # Stage deletions and other changes separately
+        deletion_files = deletions  # Files to remove
+        other_files = other_files  # Files to add or rename
+
+        # Stage deletions
+        if deletion_files:
+            logger.info("Staging deletions: %s", deletion_files)
+            deletions_staged = repo_manager.stage_files([ (file, 'remove') for file in deletion_files ])
+            if not deletions_staged:
+                logger.error("Failed to stage some deletions.")
+
+        # Stage other changes
+        if other_files:
+            logger.info("Staging other changes: %s", other_files)
+            other_changes_staged = repo_manager.stage_files([ (file, 'staged') for file in other_files ])
+            if not other_changes_staged:
+                logger.error("Failed to stage some changes.")
 
         # Get the diff with rename detection using explicit flags
         git_command = ['git', 'diff', '--cached', '--pretty=format:', '-M']
@@ -1272,41 +1392,53 @@ def cli():
             sys.exit(1)
 
         api_manager = APIManager(api_key=api_key)
-        prompt = (
-            "Generate a single-line Git commit message following the Conventional Commit specification "
-            "based on the provided git diff.\n\n"
-            "Types: feat, fix, docs, style, refactor, perf, test, chore, ci, build, rename, remove.\n\n"
-            "The commit message should start with the type, followed by a colon and a space, then a short description.\n\n"
-            "Examples:\n"
-            "feat: add user authentication module\n"
-            "rename: move config file to config/settings.json\n"
-            "remove: delete deprecated API endpoints\n\n"
-            f"{diff}"
-        )
 
-        try:
-            commit_message = api_manager.generate_commit_message(diff)
-            logger.info("Generated commit message: %s", commit_message)
+        # Handle deletions with a static message
+        deletion_message = ""
+        if deletion_files:
+            deletion_message = "remove: " + ", ".join(deletion_files)
+            logger.info("Generated deletion message: %s", deletion_message)
 
-            # Validate the commit message
-            if is_valid_commit_message(commit_message):
-                pass  # Proceed as normal
-            else:
-                logger.warning("Invalid commit message received: %s", commit_message)
+        # Handle other changes with Groq AI
+        other_message = ""
+        if other_files:
+            try:
+                commit_message = api_manager.generate_commit_message(diff)
+                logger.info("Generated commit message: %s", commit_message)
+
+                # Validate the commit message
+                if is_valid_commit_message(commit_message):
+                    other_message = commit_message
+                else:
+                    logger.warning("Invalid commit message received: %s", commit_message)
+                    sys.exit(1)
+            except GitCommandError as e:
+                if "context_length exceeded" in str(e):
+                    logger.error("Groq API Error: Context length exceeded.")
+                else:
+                    logger.error("Groq API Error: %s", e)
                 sys.exit(1)
-        except GitCommandError as e:
-            if "context_length exceeded" in str(e):
-                logger.error("Groq API Error: Context length exceeded.")
-            else:
-                logger.error("Groq API Error: %s", e)
-            sys.exit(1)
-        except Exception as e:
-            logger.error("Groq API Error: %s", traceback.format_exc())
+            except Exception as e:
+                logger.error("Groq API Error: %s", traceback.format_exc())
+                sys.exit(1)
+
+        # Combine messages
+        if deletion_message and other_message:
+            final_commit_message = f"{other_message} | {deletion_message}"
+        elif deletion_message:
+            final_commit_message = deletion_message
+        elif other_message:
+            final_commit_message = other_message
+        else:
+            final_commit_message = ""
+
+        if not final_commit_message:
+            logger.warning("No commit message generated.")
             sys.exit(1)
 
         if args.commit:
             try:
-                repo_manager.commit_changes(commit_message)
+                repo_manager.commit_changes(final_commit_message)
                 logger.info("Commit created successfully.")
 
                 if args.push:
@@ -1324,9 +1456,9 @@ def cli():
             except Exception as e:
                 logger.error("Unexpected error during commit: %s", traceback.format_exc())
         else:
-            logger.info("Generated Commit Message: %s", commit_message)
+            logger.info("Generated Commit Message: %s", final_commit_message)
             print("Generated Commit Message:")
-            print(commit_message)
+            print(final_commit_message)
     except Exception as e:
         logger.error("Unhandled Exception: %s", traceback.format_exc())
         sys.exit(1)

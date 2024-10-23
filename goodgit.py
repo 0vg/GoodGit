@@ -1,6 +1,7 @@
 import argparse
 import sys
 import os
+import re
 from git import Repo, GitCommandError
 import customtkinter as ctk
 from tkinter import messagebox, scrolledtext, filedialog
@@ -8,6 +9,7 @@ import tkinter as tk
 from groq import Groq
 from dotenv import load_dotenv
 import logging
+import threading
 
 # Configure logging
 logging.basicConfig(
@@ -23,8 +25,13 @@ load_dotenv()
 # Conventional Commit Types
 CONVENTIONAL_TYPES = [
     "feat", "fix", "docs", "style", "refactor",
-    "perf", "test", "chore", "ci", "build"
+    "perf", "test", "chore", "ci", "build",
+    "rename", "remove"  # Added for handling renames and deletions
 ]
+
+def is_valid_commit_message(commit_message):
+    pattern = r'^(feat|fix|docs|style|refactor|perf|test|chore|ci|build|rename|remove): .+'
+    return re.match(pattern, commit_message) is not None
 
 class CommitGeneratorGUI(ctk.CTk):
     def __init__(self):
@@ -92,6 +99,33 @@ class CommitGeneratorGUI(ctk.CTk):
         )
         self.scaling_optionemenu.grid(row=5, column=0, padx=20, pady=(10, 20))
         self.scaling_optionemenu.set("100%")
+
+        # Spacer to push the status panel to the bottom
+        self.sidebar_frame.grid_rowconfigure(6, weight=1)
+
+        # Status Panel Frame
+        self.status_panel = ctk.CTkFrame(self.sidebar_frame, corner_radius=0)
+        self.status_panel.grid(row=7, column=0, padx=20, pady=10, sticky="s")
+
+        # Groq Connection Status Label
+        self.groq_status_label = ctk.CTkLabel(
+            self.status_panel,
+            text="Groq API: Disconnected",
+            text_color="red",
+            anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.groq_status_label.pack(fill="x", pady=(0, 5))
+
+        # Diff Statistics Label
+        self.diff_stats_label = ctk.CTkLabel(
+            self.status_panel,
+            text="Diff Size: 0 characters | Files Changed: 0",
+            text_color="black",
+            anchor="w",
+            font=ctk.CTkFont(size=12)
+        )
+        self.diff_stats_label.pack(fill="x")
 
         # Main frame
         self.main_frame = ctk.CTkFrame(self, corner_radius=0)
@@ -210,6 +244,9 @@ class CommitGeneratorGUI(ctk.CTk):
             # If setting repository failed, prompt user to select one
             self.prompt_repository_selection()
 
+        # Initialize Groq API status
+        self.update_groq_status(False)
+
         # Apply initial theme to ScrolledText and ScrollableFrame
         self.update_scrolledtext_colors()
         self.update_scrollable_frame_colors()
@@ -251,6 +288,7 @@ class CommitGeneratorGUI(ctk.CTk):
             ctk.set_widget_scaling(new_scaling_float)
         except ValueError:
             messagebox.showerror("Invalid Scaling", "Please select a valid scaling percentage.")
+            logging.error("Invalid scaling percentage selected.")
 
     def update_scrolledtext_colors(self):
         """Update the ScrolledText widget colors based on the current appearance mode."""
@@ -271,22 +309,27 @@ class CommitGeneratorGUI(ctk.CTk):
         if selected_dir:
             if not os.path.isdir(os.path.join(selected_dir, '.git')):
                 messagebox.showerror("Invalid Repository", "The selected directory is not a Git repository.")
+                logging.error(f"Selected directory is not a Git repository: {selected_dir}")
                 return
             if self.set_repository(selected_dir):
                 messagebox.showinfo("Repository Set", f"Repository set to:\n{selected_dir}")
+                logging.info(f"Repository set to: {selected_dir}")
             else:
                 self.prompt_repository_selection()
 
     def set_repository(self, path):
         """Set the current repository path and update the GUI."""
         try:
+            # Enable rename detection using explicit flags
             repo = Repo(path)
             if repo.bare:
                 messagebox.showerror("Git Repository Error", "Selected repository is bare. Please choose a valid Git repository.")
+                logging.error(f"Selected repository is bare: {path}")
                 return False
             self.repo = repo
             self.repo_path = path
             self.repo_path_display.configure(text=self.repo_path)
+            logging.info(f"Repository path updated: {self.repo_path}")
             self.populate_files()
             self.enable_buttons()
             return True
@@ -294,11 +337,13 @@ class CommitGeneratorGUI(ctk.CTk):
             messagebox.showerror("Git Repository Error", f"Failed to set repository:\n{e}")
             self.repo = None  # Ensure repo is set to None on failure
             self.disable_buttons()
+            logging.error(f"Failed to set repository: {e}")
             return False
 
     def prompt_repository_selection(self):
         """Prompt the user to select a Git repository."""
         messagebox.showinfo("Select Repository", "Please select a Git repository to proceed.")
+        logging.info("Prompting user to select a Git repository.")
         self.change_directory()
 
     def enable_buttons(self):
@@ -307,6 +352,7 @@ class CommitGeneratorGUI(ctk.CTk):
         self.commit_button.configure(state="normal")
         self.push_button.configure(state="normal")
         self.refresh_button.configure(state="normal")
+        logging.info("Enabled commit, push, and refresh buttons.")
 
     def disable_buttons(self):
         """Disable commit, push, and refresh buttons."""
@@ -314,6 +360,7 @@ class CommitGeneratorGUI(ctk.CTk):
         self.commit_button.configure(state="disabled")
         self.push_button.configure(state="disabled")
         self.refresh_button.configure(state="disabled")
+        logging.info("Disabled commit, push, and refresh buttons.")
 
     def populate_files(self, max_files=50):
         """Populate the scrollable frame with changed files and checkboxes."""
@@ -321,27 +368,47 @@ class CommitGeneratorGUI(ctk.CTk):
             if not self.repo:
                 # Repository is not set; prompt user to select a valid repository
                 messagebox.showerror("Repository Error", "No valid Git repository selected.")
+                logging.error("Attempted to populate files without a valid Git repository.")
                 return
 
-            # Retrieve changes
-            unstaged_changes = self.repo.index.diff(None)
-            staged_changes = self.repo.index.diff("HEAD")
+            # Retrieve changes with rename detection using explicit flags
+            unstaged_diff = self.repo.git.diff('--name-status', '--find-renames')
+            staged_diff = self.repo.git.diff('--name-status', 'HEAD', '--find-renames')
             untracked_files = self.repo.untracked_files
 
-            # Combine all changes into a single list with change types
+            # Parse the diffs
             changed_files = []
 
-            # Add staged changes
-            for item in staged_changes:
-                changed_files.append((item.a_path, 'staged'))
+            # Parse staged diffs
+            for line in staged_diff.splitlines():
+                parts = line.split('\t')
+                if len(parts) == 3 and parts[0].startswith('R'):
+                    # Renamed files have the format 'R100\told_path\tnew_path'
+                    _, old_path, new_path = parts
+                    changed_files.append((f"{old_path} -> {new_path}", 'renamed'))
+                elif len(parts) == 2:
+                    status, path = parts
+                    changed_files.append((path, 'staged'))
 
-            # Add unstaged changes
-            for item in unstaged_changes:
-                changed_files.append((item.a_path, 'unstaged'))
+            # Parse unstaged diffs
+            for line in unstaged_diff.splitlines():
+                parts = line.split('\t')
+                if len(parts) == 3 and parts[0].startswith('R'):
+                    _, old_path, new_path = parts
+                    changed_files.append((f"{old_path} -> {new_path}", 'renamed'))
+                elif len(parts) == 2:
+                    status, path = parts
+                    changed_files.append((path, 'unstaged'))
 
             # Add untracked files
             for file_path in untracked_files:
                 changed_files.append((file_path, 'untracked'))
+
+            # Update Diff Statistics
+            total_files = len(changed_files)
+            total_diff_size = len(unstaged_diff) + len(staged_diff) + sum(len(f) for f in untracked_files)
+            self.diff_stats_label.configure(text=f"Diff Size: {total_diff_size} characters | Files Changed: {total_files}")
+            logging.info(f"Diff Size: {total_diff_size} characters | Files Changed: {total_files}")
 
             # Limit the number of displayed files
             if len(changed_files) > max_files:
@@ -349,6 +416,7 @@ class CommitGeneratorGUI(ctk.CTk):
                     "File Limit Reached",
                     f"Only the first {max_files} changed files are displayed. Please commit remaining changes separately."
                 )
+                logging.warning(f"Only displaying the first {max_files} changed files.")
                 changed_files = changed_files[:max_files]
 
             # Clear previous checkboxes
@@ -364,81 +432,144 @@ class CommitGeneratorGUI(ctk.CTk):
                     text_color="black"
                 )
                 no_changes_label.pack(pady=10, padx=10, fill="x")
+                logging.info("No changes detected in the repository.")
                 return
 
             for file_path, status in changed_files:
                 var = tk.BooleanVar(value=True)
+                display_text = f"{file_path} [{status}]"
+
+                # Enhance UI with color indicators
+                color = {
+                    'renamed': "blue",
+                    'remove': "red",
+                    'staged': "green",
+                    'unstaged': "yellow",
+                    'untracked': "gray"
+                }.get(status, "black")
+
+                # Create a label with colored text instead of checkbox text
+                frame = ctk.CTkFrame(self.scrollable_frame)
+                frame.pack(anchor='w', padx=10, pady=2)
+
                 chk = ctk.CTkCheckBox(
-                    self.scrollable_frame,
-                    text=f"{file_path} [{status}]",
+                    frame,
+                    text="",
                     variable=var
                 )
-                chk.pack(anchor='w', padx=10, pady=2)
+                chk.pack(side='left')
+
+                label = ctk.CTkLabel(
+                    frame,
+                    text=display_text,
+                    text_color=color
+                )
+                label.pack(side='left', padx=(5, 0))
+
                 self.file_vars[file_path] = var
+                logging.info(f"Added file to GUI: {display_text}")
 
         except AttributeError as e:
             messagebox.showerror("Error", f"Failed to retrieve changed files:\n{e}")
+            logging.error(f"Failed to retrieve changed files: {e}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to retrieve changed files:\n{e}")
+            logging.error(f"Failed to retrieve changed files: {e}")
 
     def refresh_files(self):
         """Refresh the list of changed files."""
         self.populate_files()
-        self.text_area.delete(1.0, tk.END)  # Changed to tk.END
+        self.text_area.delete(1.0, tk.END)
         messagebox.showinfo("Refreshed", "File list has been refreshed.")
+        logging.info("Refreshed the list of changed files.")
 
     def stage_selected_files(self):
         """Stage the selected files."""
         try:
             if not self.repo:
                 messagebox.showerror("Repository Error", "No valid Git repository selected.")
+                logging.error("No valid Git repository selected.")
                 return False
 
             selected_files = [file for file, var in self.file_vars.items() if var.get()]
             if not selected_files:
                 messagebox.showwarning("No Files Selected", "Please select at least one file to commit.")
+                logging.warning("No files selected for staging.")
                 return False
-            self.repo.index.add(selected_files)
+
+            logging.info(f"Selected files for staging: {selected_files}")
+
+            for file in selected_files:
+                if ' -> ' in file:
+                    # Handle renamed files
+                    old_path, new_path = file.split(' -> ')
+                    logging.info(f"Renaming file from {old_path} to {new_path}")
+                    self.repo.git.mv(old_path, new_path)
+                    # After renaming, ensure the new file is staged
+                    self.repo.index.add(new_path)
+                    logging.info(f"Staged renamed file: {new_path}")
+                else:
+                    self.repo.index.add(file)
+                    logging.info(f"Staged file: {file}")
             return True
         except GitCommandError as e:
             messagebox.showerror("Git Error", f"Failed to stage files:\n{e}")
+            logging.error(f"Failed to stage files: {e}")
+            return False
+        except Exception as e:
+            messagebox.showerror("Git Error", f"An unexpected error occurred while staging files:\n{e}")
+            logging.error(f"Unexpected error during staging: {e}")
             return False
 
     def generate_message(self, max_retries=3):
         """Generate commit message using Groq AI based on selected changes."""
+        logging.info("generate_message called.")
         if not self.stage_selected_files():
+            logging.warning("Staging selected files failed or no files were staged.")
             return
 
+        # Start a new thread for the API call to keep GUI responsive
+        threading.Thread(target=self._generate_message_thread, args=(max_retries,)).start()
+
+    def _generate_message_thread(self, max_retries):
         try:
-            diff = self.repo.git.diff('--cached', '--pretty=format:')
+            # Retrieve the staged diff with rename detection using explicit flags
+            diff = self.repo.git.diff('--cached', '--pretty=format:', '--find-renames')
             limited_diff, was_truncated = self.limit_diff_size(diff, max_size=5000)
 
+            logging.info(f"Retrieved staged diff ({len(diff)} characters).")
+            if len(diff) == 0:
+                logging.warning("Retrieved diff is empty. Please ensure that changes are staged correctly.")
+                self.show_error("Empty Diff", "The staged changes diff is empty. Please ensure that changes are staged correctly.")
+                return
+
             if was_truncated:
-                messagebox.showwarning(
-                    "Diff Truncated",
-                    "The diff is too large and has been truncated to fit the API limits."
-                )
+                self.show_warning("Diff Truncated", "The diff is too large and has been truncated to fit the API limits.")
+                logging.warning("Diff was truncated due to size limitations.")
 
             for attempt in range(1, max_retries + 1):
+                logging.info(f"Attempt {attempt} to generate commit message.")
                 commit_message = self.call_groq_api(limited_diff)
                 if commit_message:
-                    self.text_area.delete(1.0, tk.END)
-                    self.text_area.insert(tk.END, commit_message)
+                    logging.info("Commit message generated successfully.")
+                    self.update_text_area(commit_message)
                     return  # Successful generation; exit the method
                 else:
                     logging.warning(f"Attempt {attempt}: Failed to generate a valid commit message.")
                     if attempt < max_retries:
                         logging.info("Retrying to generate commit message...")
             # After max_retries attempts, allow manual input
-            response = messagebox.askyesno(
+            response = self.ask_yes_no(
                 "Generate Commit Message",
                 "Failed to generate a valid commit message after multiple attempts.\nWould you like to enter it manually?"
             )
             if response:
-                self.text_area.delete(1.0, tk.END)
+                self.clear_text_area()
+                logging.info("User opted to enter commit message manually.")
                 # The user can now type their commit message in the text area
         except Exception as e:
-            messagebox.showerror("Error", f"An error occurred:\n{e}")
+            self.show_error("Error", f"An error occurred:\n{e}")
+            logging.error(f"Error during commit message generation: {e}")
 
     def limit_diff_size(self, diff_text, max_size=5000):
         """
@@ -462,6 +593,7 @@ class CommitGeneratorGUI(ctk.CTk):
                     break
                 limited_diff += reconstructed_diff
             was_truncated = len(limited_diff) < len(diff_text)
+            logging.info(f"Diff truncated: {was_truncated}")
             return limited_diff, was_truncated
         return diff_text, False
 
@@ -469,54 +601,78 @@ class CommitGeneratorGUI(ctk.CTk):
         """Commit the staged changes with the generated message."""
         if not self.repo:
             messagebox.showerror("Repository Error", "No valid Git repository selected.")
+            logging.error("Attempted to commit without a valid Git repository.")
             return
 
         commit_msg = self.text_area.get(1.0, tk.END).strip()
         if not commit_msg:
             messagebox.showwarning("No Commit Message", "Please generate a commit message before committing.")
+            logging.warning("Attempted to commit without a commit message.")
             return
         try:
             self.repo.index.commit(commit_msg)
             messagebox.showinfo("Success", "Commit created successfully.")
+            logging.info("Commit created successfully.")
             self.populate_files()
-            self.text_area.delete(1.0, tk.END)  # Changed to tk.END
+            self.text_area.delete(1.0, tk.END)
+            self.update_groq_status(False)  # Reset Groq status after commit
         except GitCommandError as e:
             messagebox.showerror("Git Error", f"Failed to create commit:\n{e}")
+            logging.error(f"Failed to create commit: {e}")
+        except Exception as e:
+            messagebox.showerror("Git Error", f"An unexpected error occurred while creating commit:\n{e}")
+            logging.error(f"Unexpected error during commit: {e}")
 
     def push_commit(self):
         """Push the latest commit to the remote repository."""
         if not self.repo:
             messagebox.showerror("Repository Error", "No valid Git repository selected.")
+            logging.error("Attempted to push without a valid Git repository.")
             return
 
         try:
             origin = self.repo.remote(name='origin')
             origin.push()
             messagebox.showinfo("Success", "Pushed to remote repository successfully.")
+            logging.info("Pushed to remote repository successfully.")
         except GitCommandError as e:
             messagebox.showerror("Push Error", f"Failed to push to remote repository:\n{e}")
+            logging.error(f"Failed to push to remote repository: {e}")
         except AttributeError:
             messagebox.showerror("Remote Not Found", "No remote repository named 'origin' found.")
+            logging.error("No remote repository named 'origin' found.")
         except Exception as e:
-            messagebox.showerror("Error", f"An unexpected error occurred:\n{e}")
+            messagebox.showerror("Error", f"An unexpected error occurred while pushing:\n{e}")
+            logging.error(f"An unexpected error occurred while pushing: {e}")
 
     def call_groq_api(self, diff_text):
         """Call the Groq API to generate a commit message."""
         api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
             messagebox.showerror("API Key Missing", "GROQ_API_KEY environment variable not set.")
+            logging.error("Groq API Key is missing.")
+            self.update_groq_status(False)
             return None
 
         client = Groq(api_key=api_key)
 
-        # Enhanced prompt to enforce Conventional Commit types
+        # Log the size of the diff before sending
+        diff_size = len(diff_text)
+        logging.info(f"Diff size: {diff_size} characters")
+
+        # Update Diff Statistics in GUI
+        self.diff_stats_label.configure(text=f"Diff Size: {diff_size} characters | Files Changed: {len(self.file_vars)}")
+        logging.info(f"Updated Diff Statistics: Diff Size = {diff_size}, Files Changed = {len(self.file_vars)}")
+
+        # Enhanced prompt to enforce Conventional Commit types, including renames and deletions
         prompt = (
-            "You are an assistant that generates Git commit messages following the Conventional Commit specification. "
-            "Based on the provided git diff, generate a concise commit message that starts with one of the following types "
-            "followed by a colon and a space: feat, fix, docs, style, refactor, perf, test, chore, ci, build.\n\n"
-            "Commit message should be only one line and should not contain any additional text or explanations.\n\n"
-            "Example:\n"
-            "feat: add user authentication module\n\n"
+            "Generate a single-line Git commit message following the Conventional Commit specification based on the provided git diff.\n\n"
+            "Types: feat, fix, docs, style, refactor, perf, test, chore, ci, build, rename, remove.\n\n"
+            "The commit message should start with the type, followed by a colon and a space, then a short description.\n\n"
+            "Examples:\n"
+            "feat: add user authentication module\n"
+            "rename: move config file to config/settings.json\n"
+            "remove: delete deprecated API endpoints\n\n"
             f"{diff_text}"
         )
 
@@ -528,7 +684,7 @@ class CommitGeneratorGUI(ctk.CTk):
                         "content": prompt,
                     }
                 ],
-                model="llama3-8b-8192",  # Verify this is the correct model
+                model="llama3-8b-8192",  # Correct model name as per Groq's documentation
             )
             commit_message = chat_completion.choices[0].message.content.strip()
 
@@ -536,12 +692,15 @@ class CommitGeneratorGUI(ctk.CTk):
             logging.info(f"Raw commit message from API: '{commit_message}'")
 
             # Validate the commit message starts with a conventional type
-            if any(commit_message.startswith(f"{ctype}:") for ctype in CONVENTIONAL_TYPES):
+            if is_valid_commit_message(commit_message):
                 logging.info("Commit message is valid.")
+                self.update_groq_status(True)
+                # Optional: Display the commit message in the GUI
                 return commit_message
             else:
                 # Log the invalid commit message for debugging
                 logging.warning(f"Invalid commit message received: '{commit_message}'")
+                self.update_groq_status(False)
                 return None
         except GitCommandError as e:
             # Specific handling for context_length exceeded
@@ -550,12 +709,47 @@ class CommitGeneratorGUI(ctk.CTk):
                     "Groq API Error",
                     "The diff is too large for the Groq API to process. Please reduce the number of changes and try again."
                 )
+                logging.error("Groq API Error: Context length exceeded.")
             else:
                 messagebox.showerror("Groq API Error", f"An error occurred while calling the Groq API:\n{e}")
+                logging.error(f"Groq API Error: {e}")
+            self.update_groq_status(False)
             return None
         except Exception as e:
             messagebox.showerror("Groq API Error", f"An error occurred while calling the Groq API:\n{e}")
+            logging.error(f"Groq API Error: {e}")
+            self.update_groq_status(False)
             return None
+
+    def update_groq_status(self, is_connected):
+        """Update the Groq API connection status in the status panel."""
+        if is_connected:
+            self.groq_status_label.configure(text="Groq API: Connected", text_color="green")
+            logging.info("Groq API status updated to Connected.")
+        else:
+            self.groq_status_label.configure(text="Groq API: Disconnected", text_color="red")
+            logging.info("Groq API status updated to Disconnected.")
+
+    # Implement thread-safe GUI updates
+    def update_text_area(self, message):
+        self.text_area.delete(1.0, tk.END)
+        self.text_area.insert(tk.END, message)
+        logging.info("Updated commit message in GUI.")
+
+    def clear_text_area(self):
+        self.text_area.delete(1.0, tk.END)
+        logging.info("Cleared commit message text area.")
+
+    def show_warning(self, title, message):
+        messagebox.showwarning(title, message)
+        logging.warning(f"{title}: {message}")
+
+    def show_error(self, title, message):
+        messagebox.showerror(title, message)
+        logging.error(f"{title}: {message}")
+
+    def ask_yes_no(self, title, message):
+        return messagebox.askyesno(title, message)
 
 def get_repo():
     """Initialize and return the Git repository."""
@@ -563,10 +757,12 @@ def get_repo():
         repo = Repo(os.getcwd(), search_parent_directories=True)
         if repo.bare:
             messagebox.showerror("Git Repository Error", "Repository is bare. Exiting.")
+            logging.error("Repository is bare. Exiting.")
             sys.exit(1)
         return repo
     except Exception as e:
         messagebox.showerror("Git Repository Error", f"Error: {e}")
+        logging.error(f"Git Repository Error: {e}")
         sys.exit(1)
 
 def cli():
@@ -588,38 +784,68 @@ def cli():
 
     try:
         repo = get_repo()
-        changed_files = repo.index.diff(None)
+        changed_files = repo.index.diff(None, rename=True)
+        staged_changes = repo.index.diff("HEAD", rename=True)
         untracked_files = repo.untracked_files
-        if not changed_files and not untracked_files:
+
+        # Combine all changes to check if there are any changes
+        if not changed_files and not staged_changes and not untracked_files:
             print("No changed files detected.")
+            logging.info("No changed files detected.")
             sys.exit(0)
 
-        # Stage all changes
-        repo.git.add(all=True)
+        # Stage all changes, including renames
+        for item in staged_changes:
+            if item.change_type == 'R':
+                old_path, new_path = item.a_path, item.b_path
+                logging.info(f"Staging renamed file from {old_path} to {new_path}")
+                repo.git.mv(old_path, new_path)
+            else:
+                repo.git.add(item.a_path)
+                logging.info(f"Staging file: {item.a_path}")
+        for item in changed_files:
+            if item.change_type == 'R':
+                old_path, new_path = item.a_path, item.b_path
+                logging.info(f"Staging renamed file from {old_path} to {new_path}")
+                repo.git.mv(old_path, new_path)
+            else:
+                repo.git.add(item.a_path)
+                logging.info(f"Staging file: {item.a_path}")
+        for file_path in untracked_files:
+            repo.git.add(file_path)
+            logging.info(f"Staging untracked file: {file_path}")
 
-        # Get the diff
-        diff = repo.git.diff('--cached', '--pretty=format:')
+        # Get the diff with rename detection using explicit flags
+        diff = repo.git.diff('--cached', '--pretty=format:', '--find-renames')
+
+        # Update Diff Statistics
+        total_files = len(changed_files) + len(staged_changes) + len(untracked_files)
+        total_diff_size = len(diff)
+        logging.info(f"Diff Size: {total_diff_size} characters | Files Changed: {total_files}")
 
         # Limit the diff size
         max_diff_size = 5000
         if len(diff) > max_diff_size:
             print(f"Warning: The diff is too large and has been truncated to {max_diff_size} characters.")
+            logging.warning(f"Diff is too large and has been truncated to {max_diff_size} characters.")
             diff = diff[:max_diff_size]
 
         # Call Groq API
         api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
             print("Error: GROQ_API_KEY environment variable not set.")
+            logging.error("Groq API Key is missing.")
             sys.exit(1)
 
         client = Groq(api_key=api_key)
         prompt = (
-            "You are an assistant that generates Git commit messages following the Conventional Commit specification. "
-            "Based on the provided git diff, generate a concise commit message that starts with one of the following types "
-            "followed by a colon and a space: feat, fix, docs, style, refactor, perf, test, chore, ci, build.\n\n"
-            "Commit message should be only one line and should not contain any additional text or explanations.\n\n"
-            "Example:\n"
-            "feat: add user authentication module\n\n"
+            "Generate a single-line Git commit message following the Conventional Commit specification based on the provided git diff.\n\n"
+            "Types: feat, fix, docs, style, refactor, perf, test, chore, ci, build, rename, remove.\n\n"
+            "The commit message should start with the type, followed by a colon and a space, then a short description.\n\n"
+            "Examples:\n"
+            "feat: add user authentication module\n"
+            "rename: move config file to config/settings.json\n"
+            "remove: delete deprecated API endpoints\n\n"
             f"{diff}"
         )
 
@@ -631,16 +857,15 @@ def cli():
                         "content": prompt,
                     }
                 ],
-                model="llama3-8b-8192",  # Verify this is the correct model
+                model="llama3-8b-8192",  # Correct model name as per Groq's documentation
             )
             commit_message = chat_completion.choices[0].message.content.strip()
-
-            # Log the raw commit message for debugging
+            print(commit_message)  # Correctly print the commit message
             logging.info(f"Raw commit message from API: '{commit_message}'")
 
-            # Validate the commit message starts with a conventional type
-            if any(commit_message.startswith(f"{ctype}:") for ctype in CONVENTIONAL_TYPES):
-                pass
+            # Validate the commit message starts with a conventional type using regex
+            if is_valid_commit_message(commit_message):
+                pass  # Proceed as normal
             else:
                 print("Error: The generated commit message does not start with a conventional commit type.")
                 logging.warning(f"Invalid commit message received: '{commit_message}'")
@@ -648,33 +873,49 @@ def cli():
         except GitCommandError as e:
             if "context_length exceeded" in str(e):
                 print("Error: The diff is too large for the Groq API to process. Please reduce the number of changes and try again.")
+                logging.error("Groq API Error: Context length exceeded.")
             else:
                 print(f"Groq API Error: {e}")
+                logging.error(f"Groq API Error: {e}")
             sys.exit(1)
         except Exception as e:
             print(f"Groq API Error: {e}")
+            logging.error(f"Groq API Error: {e}")
             sys.exit(1)
 
         if args.commit:
-            repo.index.commit(commit_message)
-            print("Commit created successfully.")
-            if args.push:
-                try:
-                    origin = repo.remote(name='origin')
-                    origin.push()
-                    print("Pushed to remote repository successfully.")
-                except GitCommandError as e:
-                    print(f"Failed to push to remote repository:\n{e}")
-                except AttributeError:
-                    print("No remote repository named 'origin' found.")
-                except Exception as e:
-                    print(f"An unexpected error occurred while pushing:\n{e}")
+            try:
+                repo.index.commit(commit_message)
+                print("Commit created successfully.")
+                logging.info("Commit created successfully.")
+
+                if args.push:
+                    try:
+                        origin = repo.remote(name='origin')
+                        origin.push()
+                        print("Pushed to remote repository successfully.")
+                        logging.info("Pushed to remote repository successfully.")
+                    except GitCommandError as e:
+                        print(f"Failed to push to remote repository:\n{e}")
+                        logging.error(f"Failed to push to remote repository: {e}")
+                    except AttributeError:
+                        print("No remote repository named 'origin' found.")
+                        logging.error("No remote repository named 'origin' found.")
+                    except Exception as e:
+                        print(f"An unexpected error occurred while pushing:\n{e}")
+                        logging.error(f"An unexpected error occurred while pushing: {e}")
+            except GitCommandError as e:
+                print(f"Failed to create commit:\n{e}")
+                logging.error(f"Failed to create commit: {e}")
+            except Exception as e:
+                print(f"An unexpected error occurred while creating commit:\n{e}")
+                logging.error(f"Unexpected error during commit: {e}")
         else:
             print("Generated Commit Message:")
             print(commit_message)
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        sys.exit(1)
+            logging.info(f"Generated Commit Message: {commit_message}")
+    except:
+        print("Exception occured")
 
 def gui():
     """Graphical User Interface."""
